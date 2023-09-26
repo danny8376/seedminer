@@ -17,7 +17,7 @@ except ModuleNotFoundError:
     print("This script needs to be placed in the same direcory as the seedminer_launcher3.py script")
     pause("Press any key to exit")
     exit(1)
-    
+
 import os
 import sys
 import signal
@@ -29,7 +29,7 @@ offset_override = 0
 ##########FUNCTIONS##########
 def signal_handler(sig, frame):  # So KeyboardInterrupt exceptions don't appear
     sys.exit(0)
-    
+
 def bfcl_signal_handler(sig, frame): #Shows a message if the users interrupts bruteforcing
     print("\n\nBruteforcing aborted by the user. If you want to resume it later, TAKE NOTE of the offset value shown above!")
     pause()
@@ -87,9 +87,9 @@ def ask_list_input(count, allow_s):
                 raise ValueError
         except ValueError:
             inp = input("Please select a valid option: ")
-            
 
-   
+
+
 #Asks to delete no longer needed files
 def ask_for_deletion():
     inp = ask_yes_no("\nDo you want to delete no longer needed files? ")
@@ -101,7 +101,7 @@ def ask_for_deletion():
             os.remove("input.bin")
         except FileNotFoundError:
             print("", end="") #really stupid workaround
-        
+
 #Asks to rename the movable.sed in order to contain the friend code
 def ask_for_renaming():
     inp = ask_yes_no("Do you want to rename the movable.sed file to contain the friend code?")
@@ -109,7 +109,7 @@ def ask_for_renaming():
         inp = input("Enter the friend code: ")
         fc = ''.join([i for i in inp if i.isdigit()])
         os.rename("movable.sed", "movable_" + fc + ".sed")
-        
+
 #Due to how bfcl's offset argument works, this is required so support negative numbers. Does NOT include non-integer input failsafe, so this should be wrapped in a try/except block
 def get_offset_arg(ofs):
     ofs = int(ofs)
@@ -121,7 +121,7 @@ def get_offset_arg(ofs):
         offset_override = abs(ofs) * 2
     print("Bruteforcing will resume on offset {}".format(ofs))
     return offset_override
-    
+
 #Shows the main menu
 def show_main_menu():
     clear_screen()
@@ -157,6 +157,11 @@ def show_main_menu():
         sl3.generate_part2()
         sl3.do_cpu()
     elif mode == 4:
+        print(dedent("""
+        Available sub-options:
+            1. GPU Mii bruteforce
+            2. CPU Mii bruteforce"""))
+        submode = ask_list_input(2, False)
         model = None
         year = None
         inp = input("Which model is the 3DS? (old/new) ")
@@ -176,13 +181,19 @@ def show_main_menu():
                 break
             except ValueError:
                 inp = ("Please enter the year was the 3DS built (if you're not sure/don't know, enter 0): ")
-        sl3.mii_gpu(year, model)
+        if submode == 1:
+            sl3.mii_gpu(year, model)
+        else:
+            sl3.mii_cpu(year, model)
         sl3.hash_clusterer(id0)
         sl3.generate_part2()
         sl3.offset_override = 0
         sl3.force_reduced_work_size = False
         signal.signal(signal.SIGINT, bfcl_signal_handler)
-        sl3.do_gpu()
+        if submode == 1:
+            sl3.do_gpu()
+        else:
+            sl3.do_cpu()
     ask_for_deletion()
     ask_for_renaming()
     print("Done")
@@ -219,7 +230,7 @@ def show_gpu_options():
         elif inp == "s":
             print("")
             break
-            
+
 ##########END OF FUNCTIONS##########
 
 show_main_menu()

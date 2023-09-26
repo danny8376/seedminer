@@ -282,21 +282,16 @@ async def mii_cpu_loop(info, no):
         print_progress(report)
 
 def mii_cpu(year = 0, model = None):
+    if model is None:
+        print("Error: need to specify new|old movable.sed")
+        return
+
     import asyncio
 
     if os_name == 'nt':
         asyncio.set_event_loop(asyncio.ProactorEventLoop())
 
     decrypted_mii = decrypt_mii()
-
-    if len(sys.argv) >= 3:
-        model = sys.argv[2].lower()
-    else:
-        print("Error: need to specify new|old movable.sed")
-        sys.exit(1)
-
-    if len(sys.argv) == 4:
-            year = int(sys.argv[3])
 
     start_lfcs, model_str = get_start_lfcs_and_model_str(year, model)
 
@@ -326,16 +321,11 @@ def mii_cpu(year = 0, model = None):
     print("Total: {:.2f} seconds, {:.2f} M/s".format(total_time, info["count"] / total_time / 1000000), end="\n\n")
 
 def mii_gpu(year = 0, model = None):
-    decrypted_mii = decrypt_mii()
-
-    if len(sys.argv) >= 3:
-        model = sys.argv[2].lower()
-    else:
+    if model is None:
         print("Error: need to specify new|old movable.sed")
-        sys.exit(1)
+        return
 
-    if len(sys.argv) == 4:
-            year = int(sys.argv[3])
+    decrypted_mii = decrypt_mii()
 
     start_lfcs, model_str = get_start_lfcs_and_model_str(year, model)
 
@@ -454,11 +444,6 @@ def hash_clusterer(id0 = None):
     buf = b""
     hashcount = 0
 
-    if len(sys.argv) == 3:
-        dirs = [sys.argv[2]]
-    else:
-        dirs = glob.glob("*")
-
     try:
         with open("movable_part1.sed", "rb") as f:
             file = f.read()
@@ -470,7 +455,7 @@ def hash_clusterer(id0 = None):
             f.write(file)
 
     if id0 == None:
-        for i in dirs:
+        for i in glob.glob("*"):
             if is_id0_valid(i):
                 buf += str(i).encode("ascii")
                 hashcount += 1
@@ -506,8 +491,6 @@ def hash_clusterer(id0 = None):
 
 def do_cpu():
     global process_count
-    if len(sys.argv) == 3:
-        process_count = int(sys.argv[2])
 
     if which_computer_is_this >= number_of_computers:
         print("You can't assign an id # to a computer that doesn't exist")
@@ -623,6 +606,20 @@ abspath = os.path.abspath(__file__)
 dname = os.path.dirname(abspath)
 os.chdir(dname)
 
+def parse_mii():
+    year = 0
+
+    if len(sys.argv) >= 3:
+        model = sys.argv[2].lower()
+    else:
+        print("Error: need to specify new|old movable.sed")
+        sys.exit(1)
+
+    if len(sys.argv) == 4:
+            year = int(sys.argv[3])
+
+    return (year, model)
+
 #Here the "__name__" == "__main__" part is needed in order to avoid the script from printing the error messages and exiting when imported from the other script
 if __name__ == "__main__":
     if len(sys.argv) < 2 or len(sys.argv) > 4:
@@ -646,23 +643,30 @@ if __name__ == "__main__":
         generate_part2()
         sys.exit(do_gpu())
     elif sys.argv[1].lower() == "cpu":
+        if len(sys.argv) == 3:
+            process_count = int(sys.argv[2])
         print("CPU selected")
         generate_part2()
         do_cpu()
         sys.exit(0)
     elif sys.argv[1].lower() == "id0":
         print("ID0 selected")
-        hash_clusterer()
+        id0 = None
+        if len(sys.argv) == 3:
+            id0 = sys.argv[2]
+        hash_clusterer(id0)
         sys.exit(0)
     elif sys.argv[1].lower() == "mii":
+        year, model = parse_mii()
         print("MII selected")
-        mii_gpu()
+        mii_gpu(year, model)
         generate_part2()
         offset_override = 0
         sys.exit(do_gpu())
     elif sys.argv[1].lower() == "mii_cpu":
+        year, model = parse_mii()
         print("MII selected")
-        mii_cpu()
+        mii_cpu(year, model)
         generate_part2()
         offset_override = 0
         sys.exit(do_cpu())
