@@ -1,3 +1,6 @@
 [submodule "bfCL"]
 	path = bfCL
 	url = https://github.com/zoogie/bfCL.git
+[submodule "lfcsminer"]
+	path = lfcsminer
+	url = https://github.com/danny8376/lfcsminer.git

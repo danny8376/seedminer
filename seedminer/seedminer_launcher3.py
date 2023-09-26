@@ -10,7 +10,8 @@ import time
 import urllib.request
 
 # don't change this mid brute force - can be different amount multiple computers - powers of two recommended for even distribution of workload 1 2 4 8 etc.
-process_count = 4
+# 0 means auto
+process_count = 0
 # -----------------------------------------------------------------------------------------------------------------
 # Note: Optional argument parsing will override the following two variables and multiply them by 2!
 # If optional arguments are not provided, the following two variables will not be multiplied.
@@ -40,6 +41,10 @@ ftune_new = []
 err_correct = 0
 os_name = os.name
 
+if process_count == 0:
+    from math import log2
+    process_count = 2 ** int(log2(os.cpu_count()))
+
 
 def signal_handler(sig, frame):  # So KeyboardInterrupt exceptions don't appear
     sys.exit(0)
@@ -55,7 +60,7 @@ def int16bytes(n):
 def expand():
     for i in range(1, len(lfcs)):
         lfcs[i] = lfcs[i] << 12 | 0x800
-        
+
     for i in range(1, len(lfcs_new)):
         lfcs_new[i] = lfcs_new[i] << 12 | 0x800
 
@@ -113,8 +118,7 @@ def getmsed3estimate(n, isnew):
 
     return ((n // 5) - ft[ft_size - 1]) | newbit
 
-
-def mii_gpu(year = 0, model = None):
+def decrypt_mii():
     from Cryptodome.Cipher import AES
 
     nk31 = 0x59FC817E6446EA6190347B20E9BDCE52
@@ -131,18 +135,14 @@ def mii_gpu(year = 0, model = None):
 
     with open("output.bin", "wb") as f:
         f.write(final)
-    if len(sys.argv) >= 3:
-        model = sys.argv[2].lower()
-    else:
-        print("Error: need to specify new|old movable.sed")
-        sys.exit(1)
+
+    return final
+
+def get_start_lfcs_and_model_str(year = 0, model = None):
     model_str = b""
     start_lfcs_old = 0x0B000000 // 2
     start_lfcs_new = 0x05000000 // 2
     start_lfcs = 0
-    
-    if len(sys.argv) == 4:
-            year = int(sys.argv[3])
 
     if model == "old":
         model_str = b"\x00\x00"
@@ -177,11 +177,173 @@ def mii_gpu(year = 0, model = None):
         else:
             print("Year 2014-2017 not entered so beginning at lfcs midpoint " + hex(start_lfcs_new))
         start_lfcs = start_lfcs_new
+
+    return (start_lfcs, model_str)
+
+def check_progress(progress, idx):
+    pi = idx // 4
+    bi = idx % 4
+    val = progress[pi]
+    running = val >> 2 * bi + 1
+    done = val >> 2 * bi
+    return (running & 0x1, done & 0x1)
+
+def update_progress(progress, idx, running, done):
+    pi = idx // 4
+    bi = idx % 4
+    progress[pi] &= ~(0b11 << 2 * bi)
+    progress[pi] |= (1 if running else 0) << 2 * bi + 1
+    progress[pi] |= (1 if done else 0) << 2 * bi
+
+def get_task(progress, max, start):
+    offset = 0
+    min_reached = False
+    max_reached = False
+    while not min_reached or not max_reached:
+        idx = start + offset
+        if idx < 0:
+            min_reached = True
+        elif idx > max:
+            max_reached = True
+        else:
+            running, done = check_progress(progress, idx)
+            if not running and not done:
+                return idx
+        if offset == 0:
+            offset = 1
+        elif offset > 0:
+            offset = -offset
+        elif offset < 0:
+            offset = -offset + 1
+    return None
+
+def print_progress(report):
+    print("Mining:" + "".join(["     " if r is None else " {: 5}".format(r) for r in report]), end="\r")
+
+async def mii_cpu_loop(info, no):
+    import asyncio
+    import re
+    while not info["done"]:
+        model_str, min, max, start, hash, progress, report, procs = [info[k] for k in ["model_str", "min", "max", "start", "hash", "progress", "report", "procs"]]
+        pmax = max - min
+        pstart = start - min
+        idx = get_task(progress, pmax, pstart)
+        if idx is None:
+            info["done"] = True
+            break
+
+        lfcs_prefix = min + idx
+        offset = idx - pstart
+        report[no] = offset
+        start_lfcs = lfcs_prefix << 16
+        end_lfcs = start_lfcs + 0xffff
+
+        if os_name == 'nt':
+            command = "lfcsminer {:08X} {:08X} {} {}".format(start_lfcs, end_lfcs, hexlify(model_str).decode('ascii'), hexlify(hash).decode('ascii'))
+        else:
+            command = "./lfcsminer {:08X} {:08X} {} {}".format(start_lfcs, end_lfcs, hexlify(model_str).decode('ascii'), hexlify(hash).decode('ascii'))
+        update_progress(progress, idx, 1, 0)
+        proc = await asyncio.create_subprocess_exec(*command.split(), stdout = asyncio.subprocess.PIPE, stderr = asyncio.subprocess.PIPE)
+        procs[no] = proc
+        print_progress(report)
+        stdout, stderr = await proc.communicate()
+        procs[no] = None
+        print("Mining:" + " " * 6 * process_count, end="\r")
+        if proc.returncode == 0:
+            for p in procs:
+                if p:
+                    p.terminate()
+            info["done"] = True
+            info["found"] = True
+            text = stdout.decode()
+            m = re.search("hit.+0x([a-fA-F0-9]+).+rnd.+0x([a-fA-F0-9]+)", text)
+            if m:
+                lfcs = int.from_bytes(unhexlify(m.group(1)), byteorder="big")
+                rnd = int.from_bytes(unhexlify(m.group(2)), byteorder="big")
+                # not accurate, but hope other process already did similar works
+                info["count"] += ((lfcs % 0x10000) * 0x10000 + rnd) * process_count
+            print("Mining: done", end="\n\n")
+            print(f"{text}", end="")
+        elif proc.returncode == 1 and os_name == 'nt': # seems python windows terminate with 1
+            if not info["done"]:
+                print(f"Miner unexpectedly terminated - {offset}")
+        elif proc.returncode == 8:
+            if stdout:
+                update_progress(progress, idx, 0, 1)
+                info["count"] += 0x100000000
+            else:
+                print(f"Miner failed (ret={proc.returncode})")
+        elif proc.returncode == 143:
+            if not info["done"]:
+                print(f"Miner unexpectedly terminated - {offset}")
+        else:
+            print(f"Miner failed (ret={proc.returncode})")
+            print(stderr.decode())
+        print_progress(report)
+
+def mii_cpu(year = 0, model = None):
+    import asyncio
+
+    if os_name == 'nt':
+        asyncio.set_event_loop(asyncio.ProactorEventLoop())
+
+    decrypted_mii = decrypt_mii()
+
+    if len(sys.argv) >= 3:
+        model = sys.argv[2].lower()
+    else:
+        print("Error: need to specify new|old movable.sed")
+        sys.exit(1)
+
+    if len(sys.argv) == 4:
+            year = int(sys.argv[3])
+
+    start_lfcs, model_str = get_start_lfcs_and_model_str(year, model)
+
+    min = 0
+    max = 0x500 if model == "new" else 0xB00
+
+    info = {
+        "done": False,
+        "found": False,
+        "model_str": model_str,
+        "min": min,
+        "max": max,
+        "start": start_lfcs >> 16,
+        "hash": decrypted_mii[4:4 + 8],
+        "progress": bytearray((max - min) // 4 + 1),
+        "report": [None] * process_count,
+        "procs": [None] * process_count,
+        "count": 0
+    }
+
+    start_time = time.perf_counter()
+
+    # async.run is 3.7+, this should be 3.5+ compatible
+    asyncio.get_event_loop().run_until_complete(asyncio.gather(*[mii_cpu_loop(info, i) for i in reversed(range(process_count))]))
+
+    total_time = time.perf_counter() - start_time
+    print("Total: {:.2f} seconds, {:.2f} M/s".format(total_time, info["count"] / total_time / 1000000), end="\n\n")
+
+def mii_gpu(year = 0, model = None):
+    decrypted_mii = decrypt_mii()
+
+    if len(sys.argv) >= 3:
+        model = sys.argv[2].lower()
+    else:
+        print("Error: need to specify new|old movable.sed")
+        sys.exit(1)
+
+    if len(sys.argv) == 4:
+            year = int(sys.argv[3])
+
+    start_lfcs, model_str = get_start_lfcs_and_model_str(year, model)
+
     start_lfcs = endian4(start_lfcs)
     if os_name == 'nt':
-        init_command = "bfcl lfcs {:08X} {} {} {:08X}".format(start_lfcs, hexlify(model_str).decode('ascii'), hexlify(final[4:4 + 8]).decode('ascii'), endian4(offset_override))
+        init_command = "bfcl lfcs {:08X} {} {} {:08X}".format(start_lfcs, hexlify(model_str).decode('ascii'), hexlify(decrypted_mii[4:4 + 8]).decode('ascii'), endian4(offset_override))
     else:
-        init_command = "./bfcl lfcs {:08X} {} {} {:08X}".format(start_lfcs, hexlify(model_str).decode('ascii'), hexlify(final[4:4 + 8]).decode('ascii'), endian4(offset_override))
+        init_command = "./bfcl lfcs {:08X} {} {} {:08X}".format(start_lfcs, hexlify(model_str).decode('ascii'), hexlify(decrypted_mii[4:4 + 8]).decode('ascii'), endian4(offset_override))
     print(init_command)
     if force_reduced_work_size is True:
         command = "{} rws".format(init_command)
@@ -315,7 +477,7 @@ def hash_clusterer(id0 = None):
     else:
         buf += str(id0).encode("ascii")
         hashcount += 1
-        
+
     print(id0)
 
     if hashcount > 1:
@@ -466,7 +628,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2 or len(sys.argv) > 4:
         error_print()
         sys.exit(1)
-    
+
     if sys.argv[1].lower() == "gpu":
         if len(sys.argv) == 3 or len(sys.argv) == 4:
             try:
@@ -498,6 +660,12 @@ if __name__ == "__main__":
         generate_part2()
         offset_override = 0
         sys.exit(do_gpu())
+    elif sys.argv[1].lower() == "mii_cpu":
+        print("MII selected")
+        mii_cpu()
+        generate_part2()
+        offset_override = 0
+        sys.exit(do_cpu())
     elif sys.argv[1].lower() == "update-db":
         print("Update msed_data selected")
         update_db()
